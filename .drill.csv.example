@@ -1,0 +1,7 @@
+# Drill Services Configuration
+# Format: name,idType,url
+# idType: aggregateId or indexId
+
+account-service,aggregateId,https://account.example.com
+payment-service,indexId,https://payment.example.com
+notification-service,aggregateId,https://notify.example.com

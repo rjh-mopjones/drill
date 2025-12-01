@@ -1,20 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"drill/models"
 	"drill/ui"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
-	// Parse services from environment variable
-	// Format: DRILL_SERVICES="service-name,idType,url;service-name2,idType2,url2"
-	// Example: DRILL_SERVICES="account-service,indexId,https://account.com;payment-service,aggregateId,https://payment.com"
-	services := parseServicesFromEnv()
+	// Parse services from CSV file
+	services := parseServicesFromFile()
 
 	// Create the entry screen model
 	model := ui.NewEntryModel(services)
@@ -27,26 +27,45 @@ func main() {
 	}
 }
 
-func parseServicesFromEnv() []models.ServiceConfig {
-	envValue := os.Getenv("DRILL_SERVICES")
-	if envValue == "" {
-		return nil
+func parseServicesFromFile() []models.ServiceConfig {
+	// Look for .drill.csv in current directory, then home directory
+	paths := []string{
+		".drill.csv",
+		filepath.Join(os.Getenv("HOME"), ".drill.csv"),
 	}
 
-	var services []models.ServiceConfig
+	var file *os.File
 
-	// Split by semicolon for each service
-	serviceStrs := strings.Split(envValue, ";")
-	for _, svcStr := range serviceStrs {
-		svcStr = strings.TrimSpace(svcStr)
-		if svcStr == "" {
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err == nil {
+			file = f
+			break
+		}
+	}
+
+	if file == nil {
+		return nil
+	}
+	defer file.Close()
+
+	var services []models.ServiceConfig
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
 		// Split by comma: name,idType,url
-		parts := strings.Split(svcStr, ",")
+		parts := strings.Split(line, ",")
 		if len(parts) != 3 {
-			fmt.Fprintf(os.Stderr, "Warning: invalid service format '%s', expected 'name,idType,url'\n", svcStr)
+			fmt.Fprintf(os.Stderr, "Warning: line %d invalid format '%s', expected 'name,idType,url'\n", lineNum, line)
 			continue
 		}
 
@@ -61,7 +80,7 @@ func parseServicesFromEnv() []models.ServiceConfig {
 		case "aggregateid":
 			idType = models.IDTypeAggregate
 		default:
-			fmt.Fprintf(os.Stderr, "Warning: invalid idType '%s' for service '%s', using aggregateId\n", idTypeStr, name)
+			fmt.Fprintf(os.Stderr, "Warning: line %d invalid idType '%s', using aggregateId\n", lineNum, idTypeStr)
 			idType = models.IDTypeAggregate
 		}
 
