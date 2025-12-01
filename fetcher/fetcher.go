@@ -77,8 +77,8 @@ func (f *Fetcher) FetchAll(aggregateID string) ([]models.Event, []models.Command
 	return allEvents, allCommands, nil
 }
 
-func (f *Fetcher) fetchEvents(service models.ServiceConfig, aggregateID string) ([]models.Event, error) {
-	url := fmt.Sprintf("%s/events?aggregateId=%s", service.URL, aggregateID)
+func (f *Fetcher) fetchEvents(service models.ServiceConfig, id string) ([]models.Event, error) {
+	url := fmt.Sprintf("%s/events?%s=%s", service.URL, service.IDType, id)
 
 	resp, err := f.client.Get(url)
 	if err != nil {
@@ -108,8 +108,8 @@ func (f *Fetcher) fetchEvents(service models.ServiceConfig, aggregateID string) 
 	return events, nil
 }
 
-func (f *Fetcher) fetchCommands(service models.ServiceConfig, aggregateID string) ([]models.Command, error) {
-	url := fmt.Sprintf("%s/commandLifecycle?aggregateId=%s", service.URL, aggregateID)
+func (f *Fetcher) fetchCommands(service models.ServiceConfig, id string) ([]models.Command, error) {
+	url := fmt.Sprintf("%s/commandLifecycle?%s=%s", service.URL, service.IDType, id)
 
 	resp, err := f.client.Get(url)
 	if err != nil {

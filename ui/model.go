@@ -19,8 +19,8 @@ const (
 )
 
 type Model struct {
-	commands         []models.Command
-	events           []models.Event
+	Commands         []models.Command
+	Events           []models.Event
 	commandsViewport viewport.Model
 	eventsViewport   viewport.Model
 	focus            focus
@@ -28,8 +28,9 @@ type Model struct {
 	height           int
 	ready            bool
 	aggregateID      string
-	loading          bool
+	Loading          bool
 	err              error
+	Services         []models.ServiceConfig
 }
 
 type DataLoadedMsg struct {
@@ -44,7 +45,7 @@ type ErrorMsg struct {
 func NewModel(aggregateID string) Model {
 	return Model{
 		aggregateID: aggregateID,
-		loading:     true,
+		Loading:     true,
 		focus:       focusCommands,
 	}
 }
@@ -61,6 +62,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "esc":
+			// Go back to entry screen
+			entry := NewEntryModel(m.Services)
+			return entry, func() tea.Msg {
+				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+			}
 		case "tab":
 			if m.focus == focusCommands {
 				m.focus = focusEvents
@@ -119,6 +126,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commandsViewport = viewport.New(halfWidth, availableHeight)
 			m.eventsViewport = viewport.New(halfWidth, availableHeight)
 			m.ready = true
+
+			// Sort data (for data loaded from entry screen)
+			sort.Slice(m.Commands, func(i, j int) bool {
+				return m.Commands[i].PersistedAt.Before(m.Commands[j].PersistedAt)
+			})
+			sort.Slice(m.Events, func(i, j int) bool {
+				return m.Events[i].PersistedAt.Before(m.Events[j].PersistedAt)
+			})
 		} else {
 			m.commandsViewport.Width = halfWidth
 			m.commandsViewport.Height = availableHeight
@@ -130,23 +145,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.eventsViewport.SetContent(m.renderEvents())
 
 	case DataLoadedMsg:
-		m.loading = false
-		m.commands = msg.Commands
-		m.events = msg.Events
+		m.Loading = false
+		m.Commands = msg.Commands
+		m.Events = msg.Events
 
 		// Sort by persistedAt
-		sort.Slice(m.commands, func(i, j int) bool {
-			return m.commands[i].PersistedAt.Before(m.commands[j].PersistedAt)
+		sort.Slice(m.Commands, func(i, j int) bool {
+			return m.Commands[i].PersistedAt.Before(m.Commands[j].PersistedAt)
 		})
-		sort.Slice(m.events, func(i, j int) bool {
-			return m.events[i].PersistedAt.Before(m.events[j].PersistedAt)
+		sort.Slice(m.Events, func(i, j int) bool {
+			return m.Events[i].PersistedAt.Before(m.Events[j].PersistedAt)
 		})
 
 		m.commandsViewport.SetContent(m.renderCommands())
 		m.eventsViewport.SetContent(m.renderEvents())
 
 	case ErrorMsg:
-		m.loading = false
+		m.Loading = false
 		m.err = msg.Err
 	}
 
@@ -154,7 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderCommands() string {
-	if len(m.commands) == 0 {
+	if len(m.Commands) == 0 {
 		return "No commands found"
 	}
 
@@ -179,7 +194,7 @@ func (m Model) renderCommands() string {
 	sb.WriteString(TableHeaderStyle.Render(header))
 	sb.WriteString("\n")
 
-	for _, cmd := range m.commands {
+	for _, cmd := range m.Commands {
 		// Format time - pad to fixed width
 		timeStr := cmd.PersistedAt.Format("2006-01-02 15:04:05")
 		timeCell := lipgloss.NewStyle().Width(timeWidth).Render(timeStr)
@@ -214,7 +229,7 @@ func (m Model) renderCommands() string {
 }
 
 func (m Model) renderEvents() string {
-	if len(m.events) == 0 {
+	if len(m.Events) == 0 {
 		return "No events found"
 	}
 
@@ -237,7 +252,7 @@ func (m Model) renderEvents() string {
 	sb.WriteString(TableHeaderStyle.Render(header))
 	sb.WriteString("\n")
 
-	for _, evt := range m.events {
+	for _, evt := range m.Events {
 		// Format time - pad to fixed width
 		timeStr := evt.PersistedAt.Format("2006-01-02 15:04:05")
 		timeCell := lipgloss.NewStyle().Width(timeWidth).Render(timeStr)
@@ -267,7 +282,7 @@ func (m Model) View() string {
 		return fmt.Sprintf("Error: %v\n\nPress q to quit.", m.err)
 	}
 
-	if m.loading {
+	if m.Loading {
 		return "Loading data...\n\nPress q to quit."
 	}
 
@@ -312,8 +327,8 @@ func (m Model) View() string {
 	tables := lipgloss.JoinHorizontal(lipgloss.Top, commandsBox, " ", eventsBox)
 
 	// Stats and help
-	stats := fmt.Sprintf("Commands: %d | Events: %d", len(m.commands), len(m.events))
-	help := HelpStyle.Render("Tab: switch panels | j/k or arrows: scroll | pgup/pgdown: page | q: quit")
+	stats := fmt.Sprintf("Commands: %d | Events: %d", len(m.Commands), len(m.Events))
+	help := HelpStyle.Render("Tab: switch | j/k: scroll | Esc: back | q: quit")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,

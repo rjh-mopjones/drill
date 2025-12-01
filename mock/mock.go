@@ -8,11 +8,11 @@ import (
 )
 
 var MockServices = []models.ServiceConfig{
-	{Name: "account-service", URL: "http://localhost:8081"},
-	{Name: "payment-service", URL: "http://localhost:8082"},
-	{Name: "notification-service", URL: "http://localhost:8083"},
-	{Name: "audit-service", URL: "http://localhost:8084"},
-	{Name: "billing-service", URL: "http://localhost:8085"},
+	{Name: "account-service", IDType: models.IDTypeAggregate, URL: "http://localhost:8081"},
+	{Name: "payment-service", IDType: models.IDTypeIndex, URL: "http://localhost:8082"},
+	{Name: "notification-service", IDType: models.IDTypeAggregate, URL: "http://localhost:8083"},
+	{Name: "audit-service", IDType: models.IDTypeIndex, URL: "http://localhost:8084"},
+	{Name: "billing-service", IDType: models.IDTypeAggregate, URL: "http://localhost:8085"},
 }
 
 func GenerateMockData(aggregateID string) ([]models.Event, []models.Command) {

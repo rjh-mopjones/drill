@@ -1,98 +1,76 @@
 package main
 
 import (
-	"drill/fetcher"
-	"drill/mock"
 	"drill/models"
 	"drill/ui"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 )
 
 func main() {
-	// Parse command line flags
-	mockMode := flag.Bool("mock", false, "Run in mock mode with simulated data")
-	aggregateID := flag.String("id", "", "Aggregate ID (UUID) to query")
-	servicesStr := flag.String("services", "", "Comma-separated list of service URLs (e.g., http://localhost:8081,http://localhost:8082)")
-	flag.Parse()
+	// Parse services from environment variable
+	// Format: DRILL_SERVICES="service-name,idType,url;service-name2,idType2,url2"
+	// Example: DRILL_SERVICES="account-service,indexId,https://account.com;payment-service,aggregateId,https://payment.com"
+	services := parseServicesFromEnv()
 
-	// Validate aggregate ID
-	if *aggregateID == "" {
-		if *mockMode {
-			// Generate a random UUID for mock mode if not provided
-			*aggregateID = uuid.New().String()
-		} else {
-			fmt.Println("Error: aggregate ID is required. Use -id flag.")
-			fmt.Println("\nUsage:")
-			flag.PrintDefaults()
-			os.Exit(1)
-		}
-	}
+	// Create the entry screen model
+	model := ui.NewEntryModel(services)
 
-	// Validate UUID format
-	if _, err := uuid.Parse(*aggregateID); err != nil {
-		fmt.Printf("Error: invalid UUID format for aggregate ID: %s\n", *aggregateID)
-		os.Exit(1)
-	}
-
-	// Create the TUI model
-	model := ui.NewModel(*aggregateID)
-
-	// Create program
+	// Create and run program
 	p := tea.NewProgram(model, tea.WithAltScreen())
-
-	// Start data loading in goroutine
-	go func() {
-		var events []models.Event
-		var commands []models.Command
-		var err error
-
-		if *mockMode {
-			// Use mock data
-			events, commands = mock.GenerateMockData(*aggregateID)
-		} else {
-			// Parse services
-			if *servicesStr == "" {
-				p.Send(ui.ErrorMsg{Err: fmt.Errorf("no services specified. Use -services flag or -mock mode")})
-				return
-			}
-
-			serviceURLs := strings.Split(*servicesStr, ",")
-			var services []models.ServiceConfig
-			for i, url := range serviceURLs {
-				url = strings.TrimSpace(url)
-				if url == "" {
-					continue
-				}
-				services = append(services, models.ServiceConfig{
-					Name: fmt.Sprintf("service-%d", i+1),
-					URL:  url,
-				})
-			}
-
-			// Fetch data from all services
-			f := fetcher.NewFetcher(services)
-			events, commands, err = f.FetchAll(*aggregateID)
-			if err != nil {
-				p.Send(ui.ErrorMsg{Err: err})
-				return
-			}
-		}
-
-		p.Send(ui.DataLoadedMsg{
-			Events:   events,
-			Commands: commands,
-		})
-	}()
-
-	// Run the program
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running program: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func parseServicesFromEnv() []models.ServiceConfig {
+	envValue := os.Getenv("DRILL_SERVICES")
+	if envValue == "" {
+		return nil
+	}
+
+	var services []models.ServiceConfig
+
+	// Split by semicolon for each service
+	serviceStrs := strings.Split(envValue, ";")
+	for _, svcStr := range serviceStrs {
+		svcStr = strings.TrimSpace(svcStr)
+		if svcStr == "" {
+			continue
+		}
+
+		// Split by comma: name,idType,url
+		parts := strings.Split(svcStr, ",")
+		if len(parts) != 3 {
+			fmt.Fprintf(os.Stderr, "Warning: invalid service format '%s', expected 'name,idType,url'\n", svcStr)
+			continue
+		}
+
+		name := strings.TrimSpace(parts[0])
+		idTypeStr := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+
+		var idType models.IDType
+		switch strings.ToLower(idTypeStr) {
+		case "indexid":
+			idType = models.IDTypeIndex
+		case "aggregateid":
+			idType = models.IDTypeAggregate
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: invalid idType '%s' for service '%s', using aggregateId\n", idTypeStr, name)
+			idType = models.IDTypeAggregate
+		}
+
+		services = append(services, models.ServiceConfig{
+			Name:   name,
+			IDType: idType,
+			URL:    url,
+		})
+	}
+
+	return services
 }

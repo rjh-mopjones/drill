@@ -32,7 +32,15 @@ type Command struct {
 	ServiceName   string        `json:"-"` // Added to track which service this came from
 }
 
+type IDType string
+
+const (
+	IDTypeAggregate IDType = "aggregateId"
+	IDTypeIndex     IDType = "indexId"
+)
+
 type ServiceConfig struct {
-	Name string
-	URL  string
+	Name   string
+	IDType IDType
+	URL    string
 }

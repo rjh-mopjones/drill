@@ -7,7 +7,9 @@ import (
 	"drill/models"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,17 +24,21 @@ const (
 )
 
 type EntryModel struct {
-	menuSelection menuOption
-	previousIndex int
-	textInput     textinput.Model
-	inputMode     bool
-	cache         *cache.Cache
-	services      []models.ServiceConfig
-	width         int
-	height        int
-	err           error
-	loading       bool
-	loadingMsg    string
+	menuSelection   menuOption
+	previousIndex   int
+	textInput       textinput.Model
+	inputMode       bool
+	cache           *cache.Cache
+	services        []models.ServiceConfig
+	width           int
+	height          int
+	err             error
+	loading         bool
+	loadingMsg      string
+	progress        progress.Model
+	progressPercent float64
+	progressSteps   []string
+	currentStep     int
 }
 
 type LoadCompleteMsg struct {
@@ -46,6 +52,17 @@ type LoadErrorMsg struct {
 	Err error
 }
 
+type ProgressMsg struct {
+	Percent float64
+	Step    string
+}
+
+type FetchStepMsg struct {
+	ServiceName string
+	StepType    string // "events" or "commands"
+	Done        bool
+}
+
 func NewEntryModel(services []models.ServiceConfig) EntryModel {
 	ti := textinput.New()
 	ti.Placeholder = "Enter Aggregate ID (UUID)"
@@ -54,11 +71,18 @@ func NewEntryModel(services []models.ServiceConfig) EntryModel {
 
 	c, _ := cache.Load()
 
+	p := progress.New(
+		progress.WithDefaultGradient(),
+		progress.WithWidth(40),
+	)
+
 	return EntryModel{
 		menuSelection: optionLoadAccount,
 		textInput:     ti,
 		cache:         c,
 		services:      services,
+		progress:      p,
+		previousIndex: -1,
 	}
 }
 
@@ -87,8 +111,9 @@ func (m EntryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.err = nil
 				m.loading = true
-				m.loadingMsg = "Loading data from services..."
-				return m, m.loadFromServices(aggregateID)
+				m.initProgressSteps(false)
+				m.loadingMsg = "Connecting to services..."
+				return m, tea.Batch(m.tickProgress(), m.loadFromServices(aggregateID))
 			case "esc":
 				m.inputMode = false
 				m.textInput.Blur()
@@ -142,8 +167,9 @@ func (m EntryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			case optionMockMode:
 				m.loading = true
-				m.loadingMsg = "Generating mock data..."
-				return m, m.loadMockData()
+				m.initProgressSteps(true)
+				m.loadingMsg = "Connecting to mock services..."
+				return m, tea.Batch(m.tickProgress(), m.loadMockDataWithProgress())
 			}
 		}
 
@@ -183,15 +209,56 @@ func (m EntryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LoadErrorMsg:
 		m.loading = false
 		m.err = msg.Err
+
+	case ProgressMsg:
+		if m.currentStep < len(m.progressSteps) {
+			m.loadingMsg = m.progressSteps[m.currentStep]
+			m.progressPercent = float64(m.currentStep+1) / float64(len(m.progressSteps))
+			m.currentStep++
+			return m, m.tickProgress()
+		}
+		return m, nil
+
+	case progress.FrameMsg:
+		progressModel, cmd := m.progress.Update(msg)
+		m.progress = progressModel.(progress.Model)
+		return m, cmd
 	}
 
 	return m, nil
 }
 
-func (m EntryModel) loadMockData() tea.Cmd {
+func (m *EntryModel) initProgressSteps(isMock bool) {
+	var services []models.ServiceConfig
+	if isMock {
+		services = mock.MockServices
+	} else {
+		services = m.services
+	}
+
+	m.progressSteps = make([]string, 0)
+	for _, svc := range services {
+		m.progressSteps = append(m.progressSteps, fmt.Sprintf("Fetching events from %s...", svc.Name))
+		m.progressSteps = append(m.progressSteps, fmt.Sprintf("Fetching commands from %s...", svc.Name))
+	}
+	m.currentStep = 0
+	m.progressPercent = 0
+}
+
+func (m EntryModel) tickProgress() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return ProgressMsg{}
+	})
+}
+
+func (m EntryModel) loadMockDataWithProgress() tea.Cmd {
 	return func() tea.Msg {
 		aggregateID := uuid.New().String()
 		events, commands := mock.GenerateMockData(aggregateID)
+
+		// Simulate network delay
+		time.Sleep(200 * time.Millisecond)
+
 		return LoadCompleteMsg{
 			AggregateID: aggregateID,
 			Events:      events,
@@ -204,7 +271,7 @@ func (m EntryModel) loadMockData() tea.Cmd {
 func (m EntryModel) loadFromServices(aggregateID string) tea.Cmd {
 	return func() tea.Msg {
 		if len(m.services) == 0 {
-			return LoadErrorMsg{Err: fmt.Errorf("no services configured. Use -services flag")}
+			return LoadErrorMsg{Err: fmt.Errorf("no services configured. Set DRILL_SERVICES env var")}
 		}
 
 		f := fetcher.NewFetcher(m.services)
@@ -267,12 +334,26 @@ func (m EntryModel) View() string {
 }
 
 func (m EntryModel) renderLoading() string {
-	style := lipgloss.NewStyle().
+	title := TitleStyle.Render("Drill - Event Source Debugger")
+
+	// Progress content
+	var content strings.Builder
+
+	content.WriteString("\n\n")
+	content.WriteString(m.loadingMsg)
+	content.WriteString("\n\n")
+	content.WriteString(m.progress.ViewAs(m.progressPercent))
+	content.WriteString("\n\n")
+
+	stepInfo := fmt.Sprintf("Step %d of %d", m.currentStep, len(m.progressSteps))
+	content.WriteString(HelpStyle.Render(stepInfo))
+
+	contentStyle := lipgloss.NewStyle().
 		Width(m.width).
-		Height(m.height).
+		Height(m.height-4).
 		Align(lipgloss.Center, lipgloss.Center)
 
-	return style.Render(m.loadingMsg + "\n\nPlease wait...")
+	return lipgloss.JoinVertical(lipgloss.Left, title, contentStyle.Render(content.String()))
 }
 
 func (m EntryModel) renderMenu() string {
@@ -351,7 +432,7 @@ func (m EntryModel) renderPreviousRequests() string {
 			mockLabel = " [MOCK]"
 		}
 
-		line := fmt.Sprintf("%s%s", req.AggregateID[:8]+"...", mockLabel)
+		line := fmt.Sprintf("%s%s", req.AggregateID, mockLabel)
 		sb.WriteString(style.Render(line))
 		sb.WriteString("\n")
 
