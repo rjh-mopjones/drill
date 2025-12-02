@@ -2,6 +2,7 @@ package ui
 
 import (
 	"drill/models"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,26 +12,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type focus int
-
-const (
-	focusCommands focus = iota
-	focusEvents
-)
-
 type Model struct {
-	Commands         []models.Command
-	Events           []models.Event
-	commandsViewport viewport.Model
-	eventsViewport   viewport.Model
-	focus            focus
-	width            int
-	height           int
-	ready            bool
-	aggregateID      string
-	Loading          bool
-	err              error
-	Services         []models.ServiceConfig
+	Events         []models.Event
+	eventsViewport viewport.Model
+	detailViewport viewport.Model
+	selectedIndex  int
+	width          int
+	height         int
+	ready          bool
+	aggregateID    string
+	Loading        bool
+	err            error
+	Services       []models.ServiceConfig
 }
 
 type DataLoadedMsg struct {
@@ -44,9 +37,9 @@ type ErrorMsg struct {
 
 func NewModel(aggregateID string) Model {
 	return Model{
-		aggregateID: aggregateID,
-		Loading:     true,
-		focus:       focusCommands,
+		aggregateID:   aggregateID,
+		Loading:       true,
+		selectedIndex: 0,
 	}
 }
 
@@ -55,8 +48,6 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -68,48 +59,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return entry, func() tea.Msg {
 				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 			}
-		case "tab":
-			if m.focus == focusCommands {
-				m.focus = focusEvents
-			} else {
-				m.focus = focusCommands
-			}
 		case "up", "k":
-			if m.focus == focusCommands {
-				m.commandsViewport.LineUp(1)
-			} else {
-				m.eventsViewport.LineUp(1)
+			if m.selectedIndex > 0 {
+				m.selectedIndex--
+				m.updateDetailView()
+				m.updateEventsView()
 			}
 		case "down", "j":
-			if m.focus == focusCommands {
-				m.commandsViewport.LineDown(1)
-			} else {
-				m.eventsViewport.LineDown(1)
+			if m.selectedIndex < len(m.Events)-1 {
+				m.selectedIndex++
+				m.updateDetailView()
+				m.updateEventsView()
 			}
 		case "pgup":
-			if m.focus == focusCommands {
-				m.commandsViewport.HalfViewUp()
-			} else {
-				m.eventsViewport.HalfViewUp()
+			m.selectedIndex -= 10
+			if m.selectedIndex < 0 {
+				m.selectedIndex = 0
 			}
+			m.updateDetailView()
+			m.updateEventsView()
 		case "pgdown":
-			if m.focus == focusCommands {
-				m.commandsViewport.HalfViewDown()
-			} else {
-				m.eventsViewport.HalfViewDown()
+			m.selectedIndex += 10
+			if m.selectedIndex >= len(m.Events) {
+				m.selectedIndex = len(m.Events) - 1
 			}
+			m.updateDetailView()
+			m.updateEventsView()
 		case "home", "g":
-			if m.focus == focusCommands {
-				m.commandsViewport.GotoTop()
-			} else {
-				m.eventsViewport.GotoTop()
-			}
+			m.selectedIndex = 0
+			m.updateDetailView()
+			m.updateEventsView()
 		case "end", "G":
-			if m.focus == focusCommands {
-				m.commandsViewport.GotoBottom()
-			} else {
-				m.eventsViewport.GotoBottom()
-			}
+			m.selectedIndex = len(m.Events) - 1
+			m.updateDetailView()
+			m.updateEventsView()
 		}
 
 	case tea.WindowSizeMsg:
@@ -120,112 +103,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		footerHeight := 3
 		availableHeight := m.height - headerHeight - footerHeight
 
-		halfWidth := (m.width - 3) / 2
+		leftWidth := m.width / 2
+		rightWidth := m.width - leftWidth - 3
 
 		if !m.ready {
-			m.commandsViewport = viewport.New(halfWidth, availableHeight)
-			m.eventsViewport = viewport.New(halfWidth, availableHeight)
+			m.eventsViewport = viewport.New(leftWidth, availableHeight)
+			m.detailViewport = viewport.New(rightWidth, availableHeight)
 			m.ready = true
 
 			// Sort data (for data loaded from entry screen)
-			sort.Slice(m.Commands, func(i, j int) bool {
-				return m.Commands[i].PersistedAt.Before(m.Commands[j].PersistedAt)
-			})
 			sort.Slice(m.Events, func(i, j int) bool {
-				return m.Events[i].PersistedAt.Before(m.Events[j].PersistedAt)
+				return m.Events[i].Metadata.PersistedAt.Before(m.Events[j].Metadata.PersistedAt)
 			})
 		} else {
-			m.commandsViewport.Width = halfWidth
-			m.commandsViewport.Height = availableHeight
-			m.eventsViewport.Width = halfWidth
+			m.eventsViewport.Width = leftWidth
 			m.eventsViewport.Height = availableHeight
+			m.detailViewport.Width = rightWidth
+			m.detailViewport.Height = availableHeight
 		}
 
-		m.commandsViewport.SetContent(m.renderCommands())
-		m.eventsViewport.SetContent(m.renderEvents())
+		m.updateEventsView()
+		m.updateDetailView()
 
 	case DataLoadedMsg:
 		m.Loading = false
-		m.Commands = msg.Commands
 		m.Events = msg.Events
 
 		// Sort by persistedAt
-		sort.Slice(m.Commands, func(i, j int) bool {
-			return m.Commands[i].PersistedAt.Before(m.Commands[j].PersistedAt)
-		})
 		sort.Slice(m.Events, func(i, j int) bool {
-			return m.Events[i].PersistedAt.Before(m.Events[j].PersistedAt)
+			return m.Events[i].Metadata.PersistedAt.Before(m.Events[j].Metadata.PersistedAt)
 		})
 
-		m.commandsViewport.SetContent(m.renderCommands())
-		m.eventsViewport.SetContent(m.renderEvents())
+		m.updateEventsView()
+		m.updateDetailView()
 
 	case ErrorMsg:
 		m.Loading = false
 		m.err = msg.Err
 	}
 
-	return m, tea.Batch(cmds...)
+	// Handle viewport scrolling for detail panel
+	var cmd tea.Cmd
+	m.detailViewport, cmd = m.detailViewport.Update(msg)
+
+	return m, cmd
 }
 
-func (m Model) renderCommands() string {
-	if len(m.Commands) == 0 {
-		return "No commands found"
+func (m *Model) updateEventsView() {
+	m.eventsViewport.SetContent(m.renderEvents())
+
+	// Auto-scroll to keep selected item visible
+	visibleLines := m.eventsViewport.Height - 2 // account for header
+	if m.selectedIndex >= visibleLines {
+		m.eventsViewport.SetYOffset(m.selectedIndex - visibleLines + 1)
+	} else {
+		m.eventsViewport.SetYOffset(0)
 	}
+}
 
-	const (
-		timeWidth    = 22
-		serviceWidth = 22
-		cmdWidth     = 25
-		statusWidth  = 12
-		corrWidth    = 38
-	)
-
-	var sb strings.Builder
-
-	// Header row - build with fixed-width columns
-	timeCol := lipgloss.NewStyle().Width(timeWidth).Render("Time")
-	svcCol := lipgloss.NewStyle().Width(serviceWidth).Render("Service")
-	cmdCol := lipgloss.NewStyle().Width(cmdWidth).Render("Command")
-	statusCol := lipgloss.NewStyle().Width(statusWidth).Render("Status")
-	corrCol := lipgloss.NewStyle().Width(corrWidth).Render("Correlation")
-
-	header := lipgloss.JoinHorizontal(lipgloss.Left, timeCol, svcCol, cmdCol, statusCol, corrCol)
-	sb.WriteString(TableHeaderStyle.Render(header))
-	sb.WriteString("\n")
-
-	for _, cmd := range m.Commands {
-		// Format time - pad to fixed width
-		timeStr := cmd.PersistedAt.Format("2006-01-02 15:04:05")
-		timeCell := lipgloss.NewStyle().Width(timeWidth).Render(timeStr)
-
-		// Format service name with unique color
-		svcText := CreateServiceStyle(cmd.ServiceName).Render(cmd.ServiceName)
-		svcCell := lipgloss.NewStyle().Width(serviceWidth).Render(svcText)
-
-		// Command alias
-		cmdCell := lipgloss.NewStyle().Width(cmdWidth).Render(cmd.CommandAlias)
-
-		// Format status with color
-		var statusText string
-		if cmd.CommandStatus == models.CommandFailed {
-			statusText = FailedCommandStyle.Render("FAILED")
-		} else {
-			statusText = SuccessCommandStyle.Render("SUCCEEDED")
-		}
-		statusCell := lipgloss.NewStyle().Width(statusWidth).Render(statusText)
-
-		// Format correlation ID with unique color - show full UUID
-		correlationText := CreateCorrelationStyle(cmd.CorrelationID).Render(cmd.CorrelationID)
-		correlationStr := lipgloss.NewStyle().Width(corrWidth).Render(correlationText)
-
-		// Join all cells
-		row := lipgloss.JoinHorizontal(lipgloss.Left, timeCell, svcCell, cmdCell, statusCell, correlationStr)
-		sb.WriteString(row)
-		sb.WriteString("\n")
-	}
-
-	return sb.String()
+func (m *Model) updateDetailView() {
+	m.detailViewport.SetContent(m.renderEventDetail())
+	m.detailViewport.GotoTop()
 }
 
 func (m Model) renderEvents() string {
@@ -235,26 +173,27 @@ func (m Model) renderEvents() string {
 
 	const (
 		timeWidth    = 22
-		serviceWidth = 22
-		evtWidth     = 25
+		serviceWidth = 20
+		evtWidth     = 22
 		corrWidth    = 38
+		cellPadding  = "  " // spacing between cells
 	)
 
 	var sb strings.Builder
 
-	// Header row - build with fixed-width columns
+	// Header row
 	timeCol := lipgloss.NewStyle().Width(timeWidth).Render("Time")
 	svcCol := lipgloss.NewStyle().Width(serviceWidth).Render("Service")
 	evtCol := lipgloss.NewStyle().Width(evtWidth).Render("Event")
-	corrCol := lipgloss.NewStyle().Width(corrWidth).Render("Correlation")
+	corrCol := lipgloss.NewStyle().Width(corrWidth).Render("CorrelationID")
 
-	header := lipgloss.JoinHorizontal(lipgloss.Left, timeCol, svcCol, evtCol, corrCol)
+	header := lipgloss.JoinHorizontal(lipgloss.Left, timeCol, cellPadding, svcCol, cellPadding, evtCol, cellPadding, corrCol)
 	sb.WriteString(TableHeaderStyle.Render(header))
 	sb.WriteString("\n")
 
-	for _, evt := range m.Events {
-		// Format time - pad to fixed width
-		timeStr := evt.PersistedAt.Format("2006-01-02 15:04:05")
+	for i, evt := range m.Events {
+		// Format time
+		timeStr := evt.Metadata.PersistedAt.Format("2006-01-02 15:04:05")
 		timeCell := lipgloss.NewStyle().Width(timeWidth).Render(timeStr)
 
 		// Format service name with unique color
@@ -262,16 +201,96 @@ func (m Model) renderEvents() string {
 		svcCell := lipgloss.NewStyle().Width(serviceWidth).Render(svcText)
 
 		// Event alias
-		evtCell := lipgloss.NewStyle().Width(evtWidth).Render(evt.EventAlias)
+		evtAlias := evt.Metadata.EventAlias
+		if len(evtAlias) > evtWidth-2 {
+			evtAlias = evtAlias[:evtWidth-5] + "..."
+		}
+		evtCell := lipgloss.NewStyle().Width(evtWidth).Render(evtAlias)
 
-		// Format correlation ID with unique color - show full UUID
-		correlationText := CreateCorrelationStyle(evt.CorrelationID).Render(evt.CorrelationID)
-		correlationStr := lipgloss.NewStyle().Width(corrWidth).Render(correlationText)
+		// Correlation ID (full UUID)
+		correlationText := CreateCorrelationStyle(evt.Metadata.CorrelationID).Render(evt.Metadata.CorrelationID)
+		corrCell := lipgloss.NewStyle().Width(corrWidth).Render(correlationText)
 
-		// Join all cells
-		row := lipgloss.JoinHorizontal(lipgloss.Left, timeCell, svcCell, evtCell, correlationStr)
+		// Join all cells with padding
+		row := lipgloss.JoinHorizontal(lipgloss.Left, timeCell, cellPadding, svcCell, cellPadding, evtCell, cellPadding, corrCell)
+
+		// Highlight selected row
+		if i == m.selectedIndex {
+			row = SelectedRowStyle.Render(row)
+		}
+
 		sb.WriteString(row)
 		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+func (m Model) renderEventDetail() string {
+	if len(m.Events) == 0 || m.selectedIndex >= len(m.Events) {
+		return "No event selected"
+	}
+
+	evt := m.Events[m.selectedIndex]
+
+	var sb strings.Builder
+
+	// Title
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).MarginBottom(1)
+	sb.WriteString(titleStyle.Render(evt.Metadata.EventAlias))
+	sb.WriteString("\n\n")
+
+	// Labels
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#888888"))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+
+	// Event ID
+	sb.WriteString(labelStyle.Render("Event ID:"))
+	sb.WriteString("\n")
+	sb.WriteString(valueStyle.Render(evt.Metadata.EventID))
+	sb.WriteString("\n\n")
+
+	// Service
+	sb.WriteString(labelStyle.Render("Service:"))
+	sb.WriteString("\n")
+	svcStyled := CreateServiceStyle(evt.ServiceName).Render(evt.ServiceName)
+	sb.WriteString(svcStyled)
+	sb.WriteString("\n\n")
+
+	// Persisted At
+	sb.WriteString(labelStyle.Render("Persisted At:"))
+	sb.WriteString("\n")
+	sb.WriteString(valueStyle.Render(evt.Metadata.PersistedAt.Format("2006-01-02 15:04:05.000")))
+	sb.WriteString("\n\n")
+
+	// Correlation ID
+	sb.WriteString(labelStyle.Render("Correlation ID:"))
+	sb.WriteString("\n")
+	corrStyled := CreateCorrelationStyle(evt.Metadata.CorrelationID).Render(evt.Metadata.CorrelationID)
+	sb.WriteString(corrStyled)
+	sb.WriteString("\n\n")
+
+	// Aggregate ID
+	sb.WriteString(labelStyle.Render("Aggregate ID:"))
+	sb.WriteString("\n")
+	sb.WriteString(valueStyle.Render(evt.Metadata.AggregateID))
+	sb.WriteString("\n\n")
+
+	// Payload
+	sb.WriteString(labelStyle.Render("Payload:"))
+	sb.WriteString("\n")
+
+	// Pretty print JSON payload
+	if evt.Payload != "" {
+		var prettyJSON map[string]interface{}
+		if err := json.Unmarshal([]byte(evt.Payload), &prettyJSON); err == nil {
+			formatted, _ := json.MarshalIndent(prettyJSON, "", "  ")
+			sb.WriteString(valueStyle.Render(string(formatted)))
+		} else {
+			sb.WriteString(valueStyle.Render(evt.Payload))
+		}
+	} else {
+		sb.WriteString(HelpStyle.Render("(empty)"))
 	}
 
 	return sb.String()
@@ -293,47 +312,32 @@ func (m Model) View() string {
 	// Title
 	title := TitleStyle.Render(fmt.Sprintf("Event Debugger - Aggregate: %s", m.aggregateID))
 
-	// Create table headers
-	halfWidth := (m.width - 3) / 2
+	// Create panel headers
+	leftWidth := m.width / 2
+	rightWidth := m.width - leftWidth - 3
 
-	commandsTitle := "COMMANDS"
-	eventsTitle := "EVENTS"
+	eventsHeader := HeaderStyle.Width(leftWidth).Align(lipgloss.Center).Render("EVENTS")
+	detailHeader := HeaderStyle.Width(rightWidth).Align(lipgloss.Center).Render("EVENT DETAIL")
 
-	if m.focus == focusCommands {
-		commandsTitle = "> " + commandsTitle + " <"
-	}
-	if m.focus == focusEvents {
-		eventsTitle = "> " + eventsTitle + " <"
-	}
-
-	commandsHeader := HeaderStyle.Width(halfWidth).Align(lipgloss.Center).Render(commandsTitle)
-	eventsHeader := HeaderStyle.Width(halfWidth).Align(lipgloss.Center).Render(eventsTitle)
-
-	headers := lipgloss.JoinHorizontal(lipgloss.Top, commandsHeader, " ", eventsHeader)
+	headers := lipgloss.JoinHorizontal(lipgloss.Top, eventsHeader, " ", detailHeader)
 
 	// Create bordered viewports
-	commandsBorder := BorderStyle
-	eventsBorder := BorderStyle
+	eventsBorder := BorderStyle.BorderForeground(lipgloss.Color("#ffcc00"))
+	detailBorder := BorderStyle
 
-	if m.focus == focusCommands {
-		commandsBorder = commandsBorder.BorderForeground(lipgloss.Color("#ffcc00"))
-	} else {
-		eventsBorder = eventsBorder.BorderForeground(lipgloss.Color("#ffcc00"))
-	}
+	eventsBox := eventsBorder.Width(leftWidth).Render(m.eventsViewport.View())
+	detailBox := detailBorder.Width(rightWidth).Render(m.detailViewport.View())
 
-	commandsBox := commandsBorder.Width(halfWidth).Render(m.commandsViewport.View())
-	eventsBox := eventsBorder.Width(halfWidth).Render(m.eventsViewport.View())
-
-	tables := lipgloss.JoinHorizontal(lipgloss.Top, commandsBox, " ", eventsBox)
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, eventsBox, " ", detailBox)
 
 	// Stats and help
-	stats := fmt.Sprintf("Commands: %d | Events: %d", len(m.Commands), len(m.Events))
-	help := HelpStyle.Render("Tab: switch | j/k: scroll | Esc: back | q: quit")
+	stats := fmt.Sprintf("Events: %d | Selected: %d/%d", len(m.Events), m.selectedIndex+1, len(m.Events))
+	help := HelpStyle.Render("j/k: navigate | Esc: back | q: quit")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		headers,
-		tables,
+		panels,
 		stats,
 		help,
 	)

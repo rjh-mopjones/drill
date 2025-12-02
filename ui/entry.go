@@ -198,7 +198,6 @@ func (m EntryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cache.Save()
 		// Return the data view model
 		dataModel := NewModel(msg.AggregateID)
-		dataModel.Commands = msg.Commands
 		dataModel.Events = msg.Events
 		dataModel.Loading = false
 		dataModel.Services = m.services

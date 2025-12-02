@@ -11,14 +11,18 @@ const (
 	ExecutionSucceeded CommandStatus = "EXECUTION_SUCCEEDED"
 )
 
-type Event struct {
+type EventMetadata struct {
 	EventID       string    `json:"eventId"`
 	EventAlias    string    `json:"eventAlias"`
 	PersistedAt   time.Time `json:"persistedAt"`
-	Payload       string    `json:"payload"`
 	CorrelationID string    `json:"correlationId"`
 	AggregateID   string    `json:"aggregateId"`
-	ServiceName   string    `json:"-"` // Added to track which service this came from
+}
+
+type Event struct {
+	Metadata    EventMetadata `json:"metadata"`
+	Payload     string        `json:"payload"`
+	ServiceName string        `json:"-"` // Added to track which service this came from
 }
 
 type Command struct {
